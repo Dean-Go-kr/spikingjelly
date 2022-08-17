@@ -261,6 +261,11 @@ class BaseNode(base.MemoryModule):
             v_init = self.v
             self.v = torch.full_like(x.data, v_init)
 
+    def i_float_to_tensor(self, x: torch.Tensor):
+        if isinstance(self.i, float):
+            i_init = self.i
+            self.i = torch.full_like(x.data, i_init)
+
 class AdaptBaseNode(BaseNode):
     def __init__(self, v_threshold: float = 1., v_reset: float = 0.,
                  v_rest: float = 0., w_rest: float = 0., tau_w: float = 2., a: float = 0., b: float = 0.,
@@ -1513,4 +1518,328 @@ class LIAFNode(LIFNode):
         self.neuronal_reset(spike)
         return y
 
+
+class CubaLIFNode(BaseNode):
+    def __init__(self, decay_input: bool = True, current_decay: float = 0., voltage_decay: float = 0., v_threshold: float = 1.,
+                 v_reset: float = 0., surrogate_function: Callable = surrogate.Sigmoid(),
+                 detach_reset: bool = False, step_mode='s', backend='torch', store_i_v_seq: bool = False):
+
+        """
+        def __init__(
+            self, threshold, current_decay, voltage_decay,
+            v_reset=0., tau_grad=1, scale_grad=1, scale=1 << 6,
+            norm=None, dropout=None,
+            shared_param=True, requires_grad=False, graded_spike=False,  
+            lava_style = True,
+            detach_reset = False, soft_reset = False,
+            step_mode = "s", backend = "torch",
+            store_v_seq: bool = False, store_i_seq: bool = False,
+        ):
+        """
+        
+        """
+            * :ref:`API in English <CubaLIFNode.__init__-en>`
+            
+            .. _CubaLIFNode.__init__-cn:
+
+            :param threshold: 神经元阈值电压
+            :type threshold: float
+
+            :param current_decay: 电流衰减常数
+            :type current_decay: float, list
+
+            :param voltage_decay: 电压衰减常数
+            :type voltage_decay: float, list
+
+            :param v_reset: 重置电压，默认为0。若为 ``None``，则必为软重置；
+                若不为 ``None``，则取决于 ``soft_reset``的值来进行软/硬重置
+            :type v_reset: float, None
+
+            :param tau_grad: 控制梯度替代函数的陡峭程度，默认为1。
+            :type tau_grad: float
+
+            :param scale_grad: 控制梯度替代函数的幅度，默认为1。
+            :type scale_grad: float
+
+            :param scale: 量化参数，控制神经元的量化精度，默认为 ``1<<6`` 。
+                ``w_scale=int(scale)``, ``s_scale=int(scale * (1<<6))``, ``p_scale=1<<12``。
+            :type scale: float
+
+            :param norm: 对电流的normalization函数，默认为 ``None`` 。
+            :type norm: Callable
+
+            :param dropout: 对输出spike的dropout函数，默认为 ``None`` 。
+            :type dropout: Callable
+
+            :param shared_param: 层内所有神经元是否共享 ``current_decay`` 和 ``voltage_decay`` 两个神经元参数，默认为 ``True`` 。
+                若为 ``True`` ，则上述两个参数应以float的形式输入。
+                若为 ``False`` ，且上述两个参数以float形式输入，则会施加1%的随机扰动。
+                若为 ``False`` ，且上述两个参数以list形式给出，则以第0个元素为最小值，第1个元素为最大值，按均匀分布随机取值。
+            :type shared_param: bool
+
+            :param requires_grad: 指明 ``current_decay`` 和 ``voltage_decay`` 两个神经元参数是否可学习（是否需要梯度），默认为 ``False`` 。
+            :type requires_grad: bool
+
+            :param graded_spike: 指明输出的形式，默认为 ``False`` 。
+                若为 ``False`` ，则为常规脉冲输出形式；输出取值为0或1。
+                若为 ``True`` ，则输出为0（若不发放脉冲）或脉冲前电压（若发放脉冲）。
+            :type graded_spike: bool
+
+            :param lava_style: 是否严格按照lava-dl中 ``cuba.Neuron`` 的机制进行计算，默认为 ``True`` 。
+                若为 ``True`` ，则 ``detach_reset, soft_reset``这两个自定义选项均将被无视。
+            :type lava_style: bool
+
+            :param detach_reset: 是否将reset的计算图分离，默认为 ``False`` 。
+            :type detach_reset: bool
+
+            :param soft_reset: 是否进行软重制，默认为 ``False`` 。
+                注意：即使这个值为 ``False`` ，倘若 ``v_reset`` 为 ``None`` 的话，也会强行进行软重制。
+            :type soft_reset: bool
+
+            :param step_mode: 步进模式，可以为 `'s'` （单步）或 `'m'` （多步），默认为 `'s'` 。
+            :type step_mode: str
+
+            :param backend: 使用哪种后端。不同的 ``step_mode`` 可能会带有不同的后端。可以通过打印 ``self.supported_backends`` 查看当前
+                使用的步进模式支持的后端。目前只支持torch
+            :type backend: str
+
+            :param store_v_seq: 在使用 ``step_mode = 'm'`` 时，给与 ``shape = [T, N, *]`` 的输入后，是否保存中间过程的 ``shape = [T, N, *]``
+                的各个时间步的电压值 ``self.v_seq`` 。设置为 ``False`` 时计算完成后只保留最后一个时刻的电压，即 ``shape = [N, *]`` 的 ``self.voltage_state`` 。
+                通常设置成 ``False`` ，可以节省内存。
+            :type store_v_seq: bool
+
+            :param store_i_seq: 在使用 ``step_mode = 'm'`` 时，给与 ``shape = [T, N, *]`` 的输入后，是否保存中间过程的 ``shape = [T, N, *]``
+                的各个时间步的电流值 ``self.i_seq`` 。设置为 ``False`` 时计算完成后只保留最后一个时刻的电流，即 ``shape = [N, *]`` 的 ``self.current_state`` 。
+                通常设置成 ``False`` ，可以节省内存。
+            :type store_i_seq: bool
+
+            .. math::
+                I[t] = (1 - \\alpha_{I})I[t-1] + X[t]
+                V[t] = (1 - \\alpha_{V})V[t-1] + I[t]
+
+
+            * :ref:`中文API <CubaLIFNode.__init__-cn>`
+
+            .. CubaLIFNode.__init__-en:
+
+            :param threshold: threshold of the the neurons in this layer
+            :type threshold: float
+
+            :param current_decay: current decay constant
+            :type current_decay: float, list
+
+            :param voltage_decay: voltage decay constant
+            :type voltage_decay: float, list
+
+            :param v_reset: reset potential of the neurons in this layer, 0 by default.
+                If ``None`` , do soft reset.
+                If not ``None`` , the type of reset depends on the value of ``soft_reset``.
+            :type v_reset: float, None
+
+            :param tau_grad: control the steepness of the surrogate gradient function. Default to 1.
+            :type tau_grad: float
+
+            :param scale_grad: control the scale of the surrogate gradient function. Default to 1.
+            :type scale_grad: float
+
+            :param scale: quantization precision. Default to ``1<<6`` .
+                ``w_scale=int(scale)``, ``s_scale=int(scale * (1<<6))``, ``p_scale=1<<12``.
+            :type scale: float
+
+            :param norm: normalization function acting on neuronal current. Default to ``None`` .
+            :type norm: Callable
+
+            :param dropout: dropout function acting on output spikes. Default to ``None`` .
+            :type dropout: Callable
+
+            :param shared_param: whether all the neurons in this layer share the two neuronal parameters ``current_decay`` and ``voltage_decay`` . Default to `True`.
+                If ``True`` , the two neuronal parameters should be floats。
+                If ``False`` and the two parameters are floats, then a 1% perturbation is added。
+                If ``False`` and the two parameters are lists, then the final values of the parameters are taken randomly following uniform distributions in the intervals defined by the lists。
+            :type shared_param: bool
+
+            :param requires_grad: whether ``current_decay`` and ``voltage_decay`` are learnable. Default to ``False`` .
+            :type requires_grad: bool
+
+            :param graded_spike: the form of spike output. Default to ``False`` .
+                If ``False`` , the spike output takes value from 0 and 1.
+                If ``True`` , the spike output is 0 if a spike is not emitted and takes the value of the pre-spike voltage if there's a spike.
+            :type graded_spike: bool
+
+            :param lava_style: whether to strictly follow the computation of ``cuba.Neuron`` . Default to ``True`` .
+                If ``True``, optional arguments ``detach_reset, soft_reset`` will have no effect.
+            :type lava_style: bool
+
+            :param detach_reset: whether to detach the computational graph of reset in backward pass. Default to ``False`` .
+            :type detach_reset: bool
+
+            :param soft_reset: whether to do soft reset. Default to ``False`` .
+                Notice: even if the value is ``False`` , soft reset will be done if ``v_reset`` is ``None`` .
+            :type soft_reset: bool
+
+            :param step_mode: 可the step mode, which can be `s` (single-step) or `m` (multi-step). Default to `'s'` .
+            :type step_mode: str
+
+            :param backend: backend fot this neurons layer. Different ``step_mode`` may support for different backends. The user can
+            print ``self.supported_backends`` and check what backends are supported by the current ``step_mode``. Only `torch` is supported.
+            :type backend: str
+
+            :param store_v_seq: when using ``step_mode = 'm'`` and given input with ``shape = [T, N, *]``, this option controls
+                whether storing the voltage at each time-step to ``self.v_seq`` with ``shape = [T, N, *]``. If set to ``False``,
+                only the voltage at last time-step will be stored to ``self.voltage_state`` with ``shape = [N, *]``, which can reduce the
+                memory consumption. Default to ``False`` .
+            :type store_v_seq: bool
+
+            :param store_i_seq: when using ``step_mode = 'm'`` and given input with ``shape = [T, N, *]``, this option controls
+                whether storing the current at each time-step to ``self.i_seq`` with ``shape = [T, N, *]``. If set to ``False``,
+                only the current at last time-step will be stored to ``self.current_state`` with ``shape = [N, *]``, which can reduce the
+                memory consumption. Default to ``False`` .
+            :type store_i_seq: bool
+            .. math::
+                I[t] = (1 - \\alpha_{I})I[t-1] + X[t]
+                V[t] = (1 - \\alpha_{V})V[t-1] + I[t]
+
+            """
+
+        super().__init__(v_threshold, v_reset, surrogate_function, detach_reset, step_mode, backend, store_i_v_seq)
+
+        self.decay_input = decay_input
+        self.current_decay = current_decay
+        self.voltage_decay = voltage_decay 
+
+
+    @property
+    def supported_backends(self):
+        if self.step_mode == 's':
+            return ('torch',)
+        elif self.step_mode == 'm':
+            return ('torch', 'cupy')
+        else:
+            raise ValueError(self.step_mode)
+
+
+    def neuronal_charge(self, x: torch.Tensor):
+        self.i = (1 - self.current_decay) * self.i + x
+        self.i = (1 - self.voltage_decay) * self.v + self.i            
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_single_step_forward_soft_reset(x: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor):
+        i = (1 - current_decay) * i + x
+        v = (1 - voltage_decay) * v + i
+
+        spike = (v >= v_threshold).to(x)
+        v = v - spike * v_threshold
+        return spike, i, v
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_single_step_forward_hard_reset(x: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor, v_reset: torch.Tensor):
+        i = (1 - current_decay) * i + x
+        v = (1 - voltage_decay) * v + i
+
+        spike = (v >= v_threshold).to(x)
+        v = v_reset * spike + (1. - spike) * v
+        return spike, i, v
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_soft_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor):
+        spike_seq = torch.zeros_like(x_seq)
+        for t in range(x_seq.shape[0]):
+            i = (1 - current_decay) * i + x_seq[t]
+            v = (1 - voltage_decay) * v + i
+
+            spike = (v >= v_threshold).to(x_seq)
+            v = v - spike * v_threshold
+            spike_seq[t] =  spike
+        return spike_seq, i, v
+
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_soft_reset_with_i_v_seq(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor):
+        spike_seq = torch.zeros_like(x_seq)
+        i_seq = torch.zeros_like(x_seq)
+        v_seq = torch.zeros_like(x_seq)
+        for t in range(x_seq.shape[0]):
+            i = (1 - current_decay) * i + x_seq[t]
+            v = (1 - voltage_decay) * v + i
+
+            spike = (v >= v_threshold).to(x_seq)
+            v = v - spike * v_threshold
+            spike_seq[t] =  spike
+            i_seq[t] = i
+            v_seq[t] = v
+        return spike_seq, i, v, i_seq, v_seq
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_hard_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor, v_reset: torch.Tensor):
+        spike_seq = torch.zeros_like(x_seq)
+        for t in range(x_seq.shape[0]):
+            i = (1 - current_decay) * i + x_seq[t]
+            v = (1 - voltage_decay) * v + i
+
+            spike = (v >= v_threshold).to(x_seq)
+            v = v_reset * spike + (1. - spike) * v
+            spike_seq[t] =  spike
+        return spike_seq, i, v
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_hard_reset_with_i_v_seq(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor, v_reset: torch.Tensor):
+        spike_seq = torch.zeros_like(x_seq)
+        i_seq = torch.zeros_like(x_seq)
+        v_seq = torch.zeros_like(x_seq)
+        for t in range(x_seq.shape[0]):
+            i = (1 - current_decay) * i + x_seq[t]
+            v = (1 - voltage_decay) * v + i
+
+            spike = (v >= v_threshold).to(x_seq)
+            v = v_reset * spike + (1. - spike) * v
+            spike_seq[t] =  spike
+            i_seq[t] = i
+            v_seq[t] = v
+        return spike_seq, i, v, i_seq, v_seq
+
+
+    def single_step_forward(self, x: torch.Tensor):
+        if self.training:
+            return super().single_step_forward(x)
+        else:
+            self.v_float_to_tensor(x)
+            self.i_float_to_tensor(x)
+
+            if self.v_reset is None:
+                spike, self.i, self.v = self.jit_single_step_forward_soft_reset(x, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+            else:
+                spike, self.i, self.v = self.jit_single_step_forward_hard_reset(x, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+
+            return spike
+
+    
+    def multi_step_forward(self, x_seq: torch.Tensor):
+        if self.training:
+            return super().multi_step_forward(x_seq)
+        else:
+            self.v_float_to_tensor(x_seq[0])
+            self.i_float_to_tensor(x_seq[0])
+
+            if self.v_reset is None:
+                if self.store_i_v_seq:
+                    spike_seq, self.i, self.v, self.i_seq, self.v_seq = self.jit_multi_step_forward_soft_reset_with_i_v_seq(x_seq, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+                else:
+                    spike_seq, self.i, self.v = self.jit_multi_step_forward_soft_reset(x_seq, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+            else:
+                if self.store_i_v_seq:
+                    spike_seq, self.i, self.v, self.i_seq, self.v_seq = self.jit_multi_step_forward_hard_reset_with_i_v_seq(x_seq, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+                else:
+                    spike_seq, self.i, self.v = self.jit_multi_step_forward_hard_reset(x_seq, self.i, self.v, self.current_decay, self.volatage_decay, self.v_threshold)
+
+            return spike_seq
 
