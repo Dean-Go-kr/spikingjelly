@@ -7,6 +7,7 @@ from .. import configure
 import math
 import numpy as np
 import logging
+from quantize import *
 try:
     import cupy
     from . import neuron_kernel, cuda_utils
@@ -1704,8 +1705,8 @@ class CubaLIFNode(BaseNode):
         super().__init__(v_threshold, v_reset, surrogate_function, detach_reset, step_mode, backend, store_i_v_seq)
 
         self.decay_input = decay_input
-        self.current_decay = current_decay
-        self.voltage_decay = voltage_decay 
+        self.current_decay = k_bit_quantize(current_decay)
+        self.voltage_decay = k_bit_quantize(voltage_decay)
 
 
     @property
@@ -1726,8 +1727,8 @@ class CubaLIFNode(BaseNode):
     @staticmethod
     @torch.jit.script
     def jit_single_step_forward_soft_reset(x: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor):
-        i = (1 - current_decay) * i + x
-        v = (1 - voltage_decay) * v + i
+        i = (1 - k_bit_quantize(current_decay)) * i + x
+        v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
         spike = (v >= v_threshold).to(x)
         v = v - spike * v_threshold
@@ -1737,8 +1738,8 @@ class CubaLIFNode(BaseNode):
     @staticmethod
     @torch.jit.script
     def jit_single_step_forward_hard_reset(x: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor, v_reset: torch.Tensor):
-        i = (1 - current_decay) * i + x
-        v = (1 - voltage_decay) * v + i
+        i = (1 - k_bit_quantize(current_decay)) * i + x
+        v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
         spike = (v >= v_threshold).to(x)
         v = v_reset * spike + (1. - spike) * v
@@ -1750,8 +1751,8 @@ class CubaLIFNode(BaseNode):
     def jit_multi_step_forward_soft_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor):
         spike_seq = torch.zeros_like(x_seq)
         for t in range(x_seq.shape[0]):
-            i = (1 - current_decay) * i + x_seq[t]
-            v = (1 - voltage_decay) * v + i
+            i = (1 - k_bit_quantize(current_decay)) * i + x_seq[t]
+            v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
             spike = (v >= v_threshold).to(x_seq)
             v = v - spike * v_threshold
@@ -1765,8 +1766,8 @@ class CubaLIFNode(BaseNode):
         i_seq = torch.zeros_like(x_seq)
         v_seq = torch.zeros_like(x_seq)
         for t in range(x_seq.shape[0]):
-            i = (1 - current_decay) * i + x_seq[t]
-            v = (1 - voltage_decay) * v + i
+            i = (1 - k_bit_quantize(current_decay)) * i + x_seq[t]
+            v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
             spike = (v >= v_threshold).to(x_seq)
             v = v - spike * v_threshold
@@ -1781,8 +1782,8 @@ class CubaLIFNode(BaseNode):
     def jit_multi_step_forward_hard_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: torch.Tensor, v_reset: torch.Tensor):
         spike_seq = torch.zeros_like(x_seq)
         for t in range(x_seq.shape[0]):
-            i = (1 - current_decay) * i + x_seq[t]
-            v = (1 - voltage_decay) * v + i
+            i = (1 - k_bit_quantize(current_decay)) * i + x_seq[t]
+            v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
             spike = (v >= v_threshold).to(x_seq)
             v = v_reset * spike + (1. - spike) * v
@@ -1797,8 +1798,8 @@ class CubaLIFNode(BaseNode):
         i_seq = torch.zeros_like(x_seq)
         v_seq = torch.zeros_like(x_seq)
         for t in range(x_seq.shape[0]):
-            i = (1 - current_decay) * i + x_seq[t]
-            v = (1 - voltage_decay) * v + i
+            i = (1 - k_bit_quantize(current_decay)) * i + x_seq[t]
+            v = (1 - k_bit_quantize(voltage_decay)) * v + i
 
             spike = (v >= v_threshold).to(x_seq)
             v = v_reset * spike + (1. - spike) * v
