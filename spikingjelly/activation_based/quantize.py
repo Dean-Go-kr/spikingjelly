@@ -18,7 +18,7 @@ class k_bit_quantize_atgf(torch.autograd.Function):
         return grad_output
 
 
-def k_bit_quantize(x: torch.Tensor, k: int):
+def k_bit_quantize(x: torch.Tensor, k: int = 8):
     """
     :param x: a float tensor whose range is ``0 <= x <= 1``.
     :type x: torch.Tensor
