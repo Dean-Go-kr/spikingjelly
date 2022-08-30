@@ -1521,15 +1521,15 @@ class LIAFNode(LIFNode):
 
 
 class CubaLIFNode(BaseNode):
-    def __init__(self, decay_input: bool = True, i: torch.Tensor = 0., current_decay: torch.Tensor = 0., voltage_decay: torch.Tensor = 0., v_threshold: float = 1.,
+    def __init__(self, decay_input: bool = True, i: torch.Tensor = 0., current_decay: torch.Tensor = 0.0, voltage_decay: torch.Tensor = 0., v_threshold: float = 1.,
                  v_reset: float = 0., surrogate_function: Callable = surrogate.Sigmoid(),
                  detach_reset: bool = False, step_mode='s', backend='torch', store_i_v_seq: bool = False):
 
         super().__init__(v_threshold, v_reset, surrogate_function, detach_reset, step_mode, backend, store_i_v_seq)
         
         self.decay_input = decay_input
-        self.current_decay = current_decay + torch.rand(1, dtype=torch.float)
-        self.voltage_decay = voltage_decay + torch.rand(1, dtype=torch.float)
+        self.current_decay = torch.tensor(current_decay) #+ torch.normal(mean=torch.tensor(0.), std=torch.tensor(0.0001)) 
+        self.voltage_decay = torch.tensor(voltage_decay) #+ torch.normal(mean=torch.tensor(0.), std=torch.tensor(0.0001)) 
 
         self.i = i
 
@@ -1544,9 +1544,15 @@ class CubaLIFNode(BaseNode):
             raise ValueError(self.step_mode)
 
 
-    def neuronal_charge(self, x: torch.Tensor):
+    def neuronal_charge_single(self, x: torch.Tensor):
         self.i = (1 - k_bit_quantize(self.current_decay)) * self.i + x
-        self.v = (1 - k_bit_quantize(self.voltage_decay)) * self.v + self.i     
+        self.v = (1 - k_bit_quantize(self.voltage_decay)) * self.v + self.i
+
+
+    # def neuronal_charge_multi(self, x: torch.Tensor):
+    #     for t in range(x.shape[0]):
+    #         self.i = (1 - k_bit_quantize(self.current_decay)) * self.i + x[t]
+    #         self.v = (1 - k_bit_quantize(self.voltage_decay)) * self.v + self.i    
 
 
     @staticmethod
@@ -1567,11 +1573,55 @@ class CubaLIFNode(BaseNode):
         return spike, i, v
 
 
-    def single_step_forward(self, x: torch.Tensor):
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_soft_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: float):
+        print('soft reset!')
+        spike_seq = torch.zeros_like(x_seq)
+        current_seq = torch.zeros_like(x_seq)
+        voltage_seq = torch.zeros_like(x_seq)
 
+        for t in range(x_seq.shape[0]):
+            i = (1 - (current_decay)) * i + x_seq[t]
+            v = (1 - (voltage_decay)) * v + i
+
+            spike = (v >= v_threshold).to(x_seq)
+
+            voltage_seq[t] =  v
+            v = v - spike * v_threshold
+            spike_seq[t] =  spike
+            current_seq[t] =  i
+            
+        return spike_seq, current_seq, voltage_seq
+
+
+    @staticmethod
+    @torch.jit.script
+    def jit_multi_step_forward_hard_reset(x_seq: torch.Tensor, i: torch.Tensor, v: torch.Tensor, current_decay: torch.Tensor, voltage_decay: torch.Tensor, v_threshold: float, v_reset: float):
+        print('hard reset!')
+        spike_seq = torch.zeros_like(x_seq)
+        current_seq = torch.zeros_like(x_seq)
+        voltage_seq = torch.zeros_like(x_seq)
+
+        for t in range(x_seq.shape[0]):
+            i = (1 - (current_decay)) * i + x_seq[t]            
+            v = (1 - (voltage_decay)) * v + i
+            
+            spike = (v >= v_threshold).to(x_seq)
+
+            voltage_seq[t] =  v
+            v = v_reset * spike + (1. - spike) * v
+            spike_seq[t] =  spike
+            current_seq[t] =  i
+            
+        return spike_seq, current_seq, voltage_seq
+
+    
+    def single_step_forward(self, x: torch.Tensor):
+        print('single step!')
         self.v_float_to_tensor(x)
         self.i_float_to_tensor(x)
-        self.neuronal_charge(x)
+        self.neuronal_charge_single(x)
 
         if self.v_reset is None:
             spike, self.i, self.v = self.jit_single_step_forward_soft_reset(x, self.i, self.v, self.v_threshold)
@@ -1580,12 +1630,24 @@ class CubaLIFNode(BaseNode):
 
         return spike
 
+
+    def multi_step_forward(self, x_seq: torch.Tensor):
+        print('multi step!')
+        self.v_float_to_tensor(x_seq[0])
+        self.i_float_to_tensor(x_seq[0])
+
+        if self.v_reset is None:
+            spike_seq, self.i, self.v = self.jit_multi_step_forward_soft_reset(x_seq, self.i, self.v, self.current_decay, self.voltage_decay, self.v_threshold)
+        else:
+            spike_seq, self.i, self.v = self.jit_multi_step_forward_hard_reset(x_seq, self.i, self.v, self.current_decay, self.voltage_decay, self.v_threshold, self.v_reset)
+
+        return spike_seq
+
+
     def i_float_to_tensor(self, x: torch.Tensor):
         if isinstance(self.i, float):
             i_init = self.i
             self.i = torch.full_like(x.data, i_init)
-
-
 
     """
     @staticmethod
